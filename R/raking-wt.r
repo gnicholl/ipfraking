@@ -1,7 +1,6 @@
 
 
 
-
 #' Survey Raking in R
 #'
 #' Performs raking of survey weights, using a technique very similar to the SAS IHB Macro
@@ -20,9 +19,109 @@
 #' @param trim.max (default 6) each weight w is trimmed if w > trim.max * trim.method(weights)
 #' @param trim.group if NULL (default), the overall mean/median of the weights is used when trimming; if trim.group is the name of a column of data, then the weights will be trimmed based on which group of trim.group they belong to.
 #' @examples
-#'    raking(wts.start ~ A + B*C, data.dat, list(totalsA.dat, totalsBC.dat), "nb.users")
-#'    raking(wts.start ~ userGrp*ageGrp + userGrp*sex + ethnic*userGrp + region, tmpUS.dat, list(targetsUS_ew1_age.dat,
-#'       targetsUS_ew1_sex.dat, targetsUS_ew1_ethnic.dat, targetsUS_ew1_region.dat2), "nb.users", freq=F, verbose="some")
+#' # Packages
+#' library(PracTools)
+#' library(sampling)
+#' library(dplyr)
+#'
+#' # Population data
+#' data(MDarea.pop)
+#'
+#' # population counts for two strata variables
+#' table(MDarea.pop$BLKGROUP, MDarea.pop$Gender)
+#'
+#' # take a randomly stratified sample based on BLKGROUP and Gender
+#' set.seed(20230128)
+#' sample = sampling::strata(
+#'   data=MDarea.pop,
+#'   stratanames=c("BLKGROUP","Gender"),
+#'   size=sample(30:100, size=12, replace=TRUE),
+#'   method="srswor"
+#' )
+#'
+#' #### example 1: rake only on Gender
+#' # population totals
+#' targets_Gender = data.frame(
+#'   Gender=1:2,
+#'   popcount=as.numeric(table(MDarea.pop$Gender)))
+#'
+#' # initial weights
+#' sample_ex1 = sample %>%
+#'   mutate(wgt.init = 1)
+#'
+#' # raking
+#' rake_ex1 = raking(
+#'   wgt.init ~ Gender,
+#'   data=sample_ex1,
+#'   targets=list(targets_Gender),
+#'   namesTotals="popcount"
+#' )
+#' sample_ex1$wgt.rake = rake_ex1$weights
+
+#' # check that sum of weights match population targets
+#' sample_ex1 %>%
+#'   group_by(Gender) %>%
+#'   summarise(wgttotals = sum(wgt.rake))
+#'
+#'
+#'
+#' #### example 2: rake on Gender and Geographic area using marginal totals
+#' # population totals
+#' targets_Gender = data.frame(
+#'   Gender=1:2,
+#'   popcount=as.numeric(table(MDarea.pop$Gender)))
+#' targets_BLKGRP = data.frame(
+#'   BLKGROUP=1:6,
+#'   popcount=as.numeric(table(MDarea.pop$BLKGROUP)))
+#'
+#' # initial weights
+#' sample_ex2 = sample %>%
+#'   mutate(wgt.init = 1)
+#'
+#' # raking
+#' rake_ex2 = raking(
+#'   wgt.init ~ Gender + BLKGROUP,
+#'   data=sample_ex2,
+#'   targets=list(targets_Gender, targets_BLKGRP),
+#'   namesTotals="popcount"
+#' )
+#' sample_ex2$wgt.rake = rake_ex2$weights
+#'
+#' # check that sum of weights match population targets
+#' sample_ex2 %>%
+#'   group_by(Gender) %>%
+#'   summarise(wgttotals = sum(wgt.rake))
+#' sample_ex2 %>%
+#'   group_by(BLKGROUP) %>%
+#'   summarise(wgttotals = sum(wgt.rake))
+#'
+#'
+#'
+#' #### example 3: rake on all Gender-GeographicArea bins
+#' # (equivalent to post-stratification)
+#' # population totals
+#' targets_GenderBLK = as.data.frame(table(MDarea.pop$BLKGROUP, MDarea.pop$Gender)) %>%
+#'   rename(BLKGROUP = Var1,
+#'          Gender   = Var2,
+#'          popcount = Freq)
+#'
+#' # initial weights
+#' sample_ex3 = sample %>%
+#'   mutate(wgt.init = 1)
+#'
+#' # raking
+#' rake_ex3 = raking(
+#'   wgt.init ~ Gender*BLKGROUP,
+#'   data=sample_ex3,
+#'   targets=list(targets_GenderBLK),
+#'   namesTotals="popcount"
+#' )
+#' sample_ex3$wgt.rake = rake_ex3$weights
+#'
+#' # check that sum of weights match population targets
+#' sample_ex3 %>%
+#'   group_by(Gender,BLKGROUP) %>%
+#'   summarise(wgttotals = sum(wgt.rake))
 #' @references
 #' * Izrael, Hoaglin & Battaglia (2000), ["A SAS Macro for Balancing a Weighted Sample"](http://www2.sas.com/proceedings/sugi25/25/st/25p258.pdf), Proceedings of the 25th Annual SAS Users Group International Conference, Paper 258
 #' * Izrael, Battaglia & Frankel (2009), ["Extreme Survey Weight Adjustment as a Component of Sample Balancing (a.k.a. Raking)"](https://support.sas.com/resources/papers/proceedings09/247-2009.pdf), SAS Global Forum, Paper 247-2009

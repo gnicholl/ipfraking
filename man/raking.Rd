@@ -51,9 +51,108 @@ raking(
 Performs raking of survey weights, using a technique very similar to the SAS IHB Macro
 }
 \examples{
-   raking(wts.start ~ A + B*C, data.dat, list(totalsA.dat, totalsBC.dat), "nb.users")
-   raking(wts.start ~ userGrp*ageGrp + userGrp*sex + ethnic*userGrp + region, tmpUS.dat, list(targetsUS_ew1_age.dat,
-      targetsUS_ew1_sex.dat, targetsUS_ew1_ethnic.dat, targetsUS_ew1_region.dat2), "nb.users", freq=F, verbose="some")
+# Packages
+library(PracTools)
+library(sampling)
+library(dplyr)
+
+# Population data
+data(MDarea.pop)
+
+# population counts for two strata variables
+table(MDarea.pop$BLKGROUP, MDarea.pop$Gender)
+
+# take a randomly stratified sample based on BLKGROUP and Gender
+set.seed(20230128)
+sample = sampling::strata(
+  data=MDarea.pop,
+  stratanames=c("BLKGROUP","Gender"),
+  size=sample(30:100, size=12, replace=TRUE),
+  method="srswor"
+)
+
+#### example 1: rake only on Gender
+# population totals
+targets_Gender = data.frame(
+  Gender=1:2,
+  popcount=as.numeric(table(MDarea.pop$Gender)))
+
+# initial weights
+sample_ex1 = sample \%>\%
+  mutate(wgt.init = 1)
+
+# raking
+rake_ex1 = raking(
+  wgt.init ~ Gender,
+  data=sample_ex1,
+  targets=list(targets_Gender),
+  namesTotals="popcount"
+)
+sample_ex1$wgt.rake = rake_ex1$weights
+# check that sum of weights match population targets
+sample_ex1 \%>\%
+  group_by(Gender) \%>\%
+  summarise(wgttotals = sum(wgt.rake))
+
+
+
+#### example 2: rake on Gender and Geographic area using marginal totals
+# population totals
+targets_Gender = data.frame(
+  Gender=1:2,
+  popcount=as.numeric(table(MDarea.pop$Gender)))
+targets_BLKGRP = data.frame(
+  BLKGROUP=1:6,
+  popcount=as.numeric(table(MDarea.pop$BLKGROUP)))
+
+# initial weights
+sample_ex2 = sample \%>\%
+  mutate(wgt.init = 1)
+
+# raking
+rake_ex2 = raking(
+  wgt.init ~ Gender + BLKGROUP,
+  data=sample_ex2,
+  targets=list(targets_Gender, targets_BLKGRP),
+  namesTotals="popcount"
+)
+sample_ex2$wgt.rake = rake_ex2$weights
+
+# check that sum of weights match population targets
+sample_ex2 \%>\%
+  group_by(Gender) \%>\%
+  summarise(wgttotals = sum(wgt.rake))
+sample_ex2 \%>\%
+  group_by(BLKGROUP) \%>\%
+  summarise(wgttotals = sum(wgt.rake))
+
+
+
+#### example 3: rake on all Gender-GeographicArea bins
+# (equivalent to post-stratification)
+# population totals
+targets_GenderBLK = as.data.frame(table(MDarea.pop$BLKGROUP, MDarea.pop$Gender)) \%>\%
+  rename(BLKGROUP = Var1,
+         Gender   = Var2,
+         popcount = Freq)
+
+# initial weights
+sample_ex3 = sample \%>\%
+  mutate(wgt.init = 1)
+
+# raking
+rake_ex3 = raking(
+  wgt.init ~ Gender*BLKGROUP,
+  data=sample_ex3,
+  targets=list(targets_GenderBLK),
+  namesTotals="popcount"
+)
+sample_ex3$wgt.rake = rake_ex3$weights
+
+# check that sum of weights match population targets
+sample_ex3 \%>\%
+  group_by(Gender,BLKGROUP) \%>\%
+  summarise(wgttotals = sum(wgt.rake))
 }
 \references{
 \itemize{
