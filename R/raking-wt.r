@@ -132,8 +132,21 @@ raking = function(
 		trim=FALSE, trim.method=c("median", "mean"), trim.max=6, trim.lim=c(0,trim.max), trim.group=NULL, ...)
 {
 
+  # helper functions ###########################################################
+
   # %notin% operator for readibility
   `%notin%` = Negate(`%in%`)
+
+  # coefficient of variation
+  print_cv = function(x, iter) {
+    cat("cv after iteration ",iter,": ", sqrt(var(x)) / mean(x), "\n", sep="")
+  }
+  print_cv2 = function(x, vname) {
+    cat("\t cv after calibrating on",vname,"=",sqrt(var(x)) / mean(x),"\n")
+  }
+
+  ##############################################################################
+
 
   # parse inputs & input verification ##########################################
 
@@ -141,7 +154,7 @@ raking = function(
     if(verbose %notin% c("some", "none", "full"))
       stop("'verbose' must be one of 'some', 'none', 'full'")
 
-    if (!plyr::is.formula(formula))
+    if (!inherits(formula, "formula"))
       stop("'formula' must be a formula")
 
     if (!is.data.frame(data))
@@ -166,9 +179,6 @@ raking = function(
     if (!is.numeric(maxiter) || length(maxiter)!=1 || maxiter<=0 || maxiter%%1!=0)
       stop("'maxiter' must be a positive integer")
 
-    if (!is.numeric(epsilon) || length(epsilon)!=1 || epsilon<=0 || (epsilon>=1 && epsilon %%1!=0))
-      stop("'epsilon' must be a proportion (i.e., between 0 and 1) or a positive integer")
-
     if (!is.logical(freq))
       stop("'freq' must be TRUE or FALSE")
 
@@ -178,13 +188,12 @@ raking = function(
     if (!is.logical(trim))
       stop("'trim' must be TRUE or FALSE")
 
-    if (!is.numeric(trim.max) || length(trim.max)!=1 || trim.max<=0)
-      stop("'trim.max' must be a positive number")
+    if (!is.numeric(trim.lim) || length(trim.lim)!=2 || trim.lim[1]<0 || trim.lim[2]<=0 || trim.lim[1] >= trim.lim[2])
+      stop("'trim.lim' must be a pair of positive numbers such that 0 <= trim.lim[1] < trim.lim[2]")
 
     trim.method = trim.method[1]
-    if(trim.method %notin% c("median", "mean"))
-      stop("'trim.method' must be one of 'median','mean'")
-    cutoff.func = function(wgts) get(trim.method)(wgts) * trim.max
+    cutoff.above = function(wgts) get(trim.method)(wgts) * trim.lim[2]
+    cutoff.below = function(wgts) get(trim.method)(wgts) * trim.lim[1]
 
     if (trim && !is.null(trim.group) && is.na(match(trim.group, names(data))))
       stop("'", trim.group, "' is not valid column of 'data'")
@@ -192,6 +201,10 @@ raking = function(
     nameWts = deparse(formula[[2]])
     if (nameWts %notin% names(data))
       stop("'", nameWts, "' is not a valid column of 'data'")
+
+    if (!is.numeric(epsilon) || length(epsilon)!=1 || epsilon<=0 || (epsilon>=1 && epsilon %%1!=0))
+      stop("'epsilon' must be a proportion (i.e., between 0 and 1) or a positive integer")
+    if (epsilon < 1) epsilon = epsilon * sum(data[ , nameWts])
 
     levels = unlist(strsplit(deparse(formula[[3]]), " \\+ "))
     levels = strsplit(levels, " \\* ")
@@ -213,192 +226,197 @@ raking = function(
 
   ##############################################################################
 
-
-
-  # initializations
-  if (length(namesTotals)==1) namesTotals = rep(namesTotals, nbTargets)
-  if (epsilon < 1)            epsilon = epsilon * sum(data[ , nameWts])
-
-  # combining the values of levels into a single column
-  wtsRake = matrix(NA,nrow=nrow(data),ncol=nbTargets)
-  for (i in 1:nbTargets) {
-
-    # combining levels[[i]] into a single column of targets[[i]]
-  	tmp = as.character(interaction(targets[[i]][ , levels[[i]]], drop=T))
-    targets[[i]] = cbind(" "=tmp, targets[[i]])
-
-    # combining levels[[i]] into a single column of 'data'
-    tmp = as.character(interaction(data[ , levels[[i]]], drop=T))
-    wtsRake[,i] = tmp
-
-  }
-
-  # putting the wtsRake data frame together (part 2)
-  if (is.null(trim.group)) {
-
-    wtsRake = data.frame(wtsRake, data[ , nameWts])
-    colnames(wtsRake) = c(paste("cell", 1:nbTargets, sep=""), "weights")
-
-  } else {
-
-    wtsRake = data.frame(wtsRake, data[ , nameWts], data[ , trim.group])
-    colnames(wtsRake) = c(paste("cell", 1:nbTargets, sep=""), "weights", trim.group)
-
-  }
-
-  # printing frequency tables
-  if (freq) {
+    # CONSTRUCT TARGET AND WEIGHTS DATA FRAMES
+    wtsRake = data.frame(matrix("",nrow=nrow(data),ncol=nbTargets))
     for (i in 1:nbTargets) {
-      tmp = as.data.frame(table(wtsRake[ , i]))
-      names(tmp)[1] = ""
-      cat("Frequency table for ", paste(levels[[i]], collapse=" x "), ": \n", sep="")
-  	  print(tmp)
-  	  if (any(tmp$Freq < freqWarn)) message("One or more cells with frequency < ", freqWarn)
-  	  cat("\n\n")
+      rakevar = paste0(levels[[i]],collapse="*")
+
+      # combining levels[[i]] into a single column of targets[[i]]
+      targets[[i]][,rakevar] = as.character(interaction(targets[[i]][ , levels[[i]] ], drop=T))
+      targets[[i]] = targets[[i]][,c(rakevar,namesTotals)]
+
+      # combining levels[[i]] into a single column of 'data'
+      wtsRake[,i] = as.character(interaction(data[ , levels[[i]]], drop=T))
+      colnames(wtsRake)[i] = rakevar
+
     }
-  }
+    wtsRake[,"weights"] = data[,nameWts]
+    if(!is.null(trim.group)) wtsRake[,trim.group] = as.character(data[,trim.group])
 
-  # raking the weights
-  iter = 1; converged = FALSE
-  if (verbose!="none") cat("cv of weights before raking =", sqrt(var(wtsRake$weights))/mean(wtsRake$weights), "\n")
 
-  while (iter <= maxiter) {
-    if (verbose=="full") cat("Iteration #" , iter, ":\n")
-
-    for (i in 1:nbTargets) {
-      # summing weights in each cell
-      tmp = split(wtsRake$weights, wtsRake[ , i])
-      tmp = sapply(tmp, sum)
-      tmp = data.frame(names(tmp), tmp, row.names=NULL)
-
-      # computing the inflating/deflating factor for each cell
-      factors = merge(tmp, targets[[i]], by=1)
-      factors = data.frame(factors[ , 1], factors[ , namesTotals[[i]]] / factors[ , 2])
-      colnames(factors) = c(paste("cell", i, sep=""), "factors")
-
-      # multiplying the weights by the above inflating/deflating factors
-      wtsRake = plyr::join(wtsRake, factors, by=paste("cell", i, sep=""))
-      wtsRake$weights = wtsRake$weights * wtsRake[ , "factors"]
-      wtsRake = wtsRake[ , -ncol(wtsRake)]
-
-      if (verbose=="full") {
-        cat(
-          "\t cv after calibrating on",
-          paste(levels[[i]], collapse=" x "),
-      		"=",
-      		sqrt(var(wtsRake$weights))/mean(wtsRake$weights),
-      		"\n"
-      	)
+    # PRINT FREQ TABLES
+    if (freq) {
+      cat("-----------------\n")
+      cat("Frequency tables: \n\n")
+      for (i in 1:nbTargets) {
+        tmp = as.data.frame(table(wtsRake[ , i]))
+        names(tmp)[1] = colnames(wtsRake)[i]
+        print(tmp,row.names=FALSE)
+        if (any(tmp$Freq < freqWarn)) message("One or more cells with frequency < ", freqWarn)
+        cat("\n")
       }
+      cat("-----------------\n\n")
+    }
 
-    } # for (i in 1:nbTargets)
+    # PRINT PRE-RAKING CV
+    if (verbose!="none") print_cv(wtsRake$weights, iter=0)
 
+    # RAKING ITERATIONS
+    iter = 1; converged = FALSE
+    while (iter <= maxiter) {
+      if (verbose=="full") cat("Iteration #" , iter, ":\n" , sep="")
 
-    # weight trimming
-    if (trim) {
-      # computing the upper bound(s)
-      if (is.null(trim.group)) {
-       	wtsRake$bound = cutoff.func(wtsRake$weights)
+      # rake on each variable
+      for (i in 1:nbTargets) {
+        rakevar = paste0(levels[[i]],collapse="*")
 
-      } else {
-        tmp = split(wtsRake$weights, wtsRake[ , trim.group]	)
-        bounds = sapply(tmp, cutoff.func)
-      	bounds = data.frame(bounds, names(bounds), row.names=NULL)
-      	colnames(bounds) = c("bound", trim.group)
-        wtsRake = plyr::join(wtsRake, bounds, by=trim.group)
+        # summing weights in each cell
+        sumwgts = split(wtsRake[,"weights"], wtsRake[ , rakevar])
+        sumwgts = sapply(sumwgts, sum)
+        sumwgts = data.frame(names(sumwgts), sumwgts, row.names=NULL)
+        colnames(sumwgts) = c(rakevar,"sum.wgt")
 
-      }
+        # computing the inflating/deflating factor for each cell
+        factors = merge(sumwgts, targets[[i]], by=rakevar)
+        factors[,"factors"] = factors[,namesTotals] / factors[,"sum.wgt"]
+        factors = factors[,c(rakevar,"factors")]
 
-     	# saving the values of the weights before trimming
-      wtsRake$weights.ori = wtsRake$weights
+        # multiplying the weights by the above inflating/deflating factors
+        wtsRake = merge(wtsRake, factors, by=rakevar)
+        wtsRake[,"weights"] = wtsRake[,"weights"] * wtsRake[,"factors"]
+        wtsRake[,"factors"] = NULL
 
-     	needed = TRUE; iter.trim = 0
-      while (iter.trim <= 10) {
-        # checking if trimming is needed
-  		  needed = any(wtsRake$weights > wtsRake$bound)
+        # print cv
+        if (verbose=="full") print_cv2(wtsRake$weights, vname=rakevar)
 
-  		  # if not needed...
-  		  if (!needed) {
-  		    if (verbose=="some") cat("Trimming for iteration	#" , iter, ":\n")
-          if (iter.trim==0) {
-            if (verbose!="none") cat("\t No weights needed to be trimmed \n")
+      } # for (i in 1:nbTargets)
 
-          } else {
-            if (verbose!="none"){
-              cat("\t After", iter.trim, "trimming cycle(s),", sum(wtsRake$trimmed), "observations had their weights trimmed \n")
-              if (verbose=="full") cat("\t")
-              cat("\t Sum of weights for those", sum(wtsRake$trimmed), "observations before trimming =",
-                  sum(wtsRake$weights.ori[wtsRake$trimmed==1]), "\n")
-              if (verbose=="full") cat("\t")
-              cat("\t Sum of weights for those", sum(wtsRake$trimmed), "observations after trimming =",
-                	sum(wtsRake$weights[wtsRake$trimmed==1]), "\n")
-            }
+      ###############################################################################
+      # weight trimming
+      if (trim) {
+        # computing the upper and lower bound(s)
+        wtsRake$bound.above = NULL
+        wtsRake$bound.below = NULL
+        if (is.null(trim.group)) {
+          wtsRake$bound.above = cutoff.above(wtsRake$weights)
+          wtsRake$bound.below = cutoff.below(wtsRake$weights)
 
-            wtsRake$trimmed = NULL; wtsRake$weights.ori = NULL
-          }
+        } else {
+          tmp = split(wtsRake$weights, wtsRake[ , trim.group]	)
 
-  		    break # if trimming not needed, stop while loop
+          tmp_above = sapply(tmp, cutoff.above)
+          tmp_above = data.frame(names(tmp_above), tmp_above, row.names=NULL)
+          colnames(tmp_above) = c(trim.group,"bound.above")
+
+          tmp_below = sapply(tmp, cutoff.below)
+          tmp_below = data.frame(names(tmp_below), tmp_below, row.names=NULL)
+          colnames(tmp_below) = c(trim.group,"bound.below")
+
+          tmp_both = merge(tmp_below, tmp_above, by=trim.group)
+          wtsRake = merge(wtsRake, tmp_both, by=trim.group)
         }
 
-        # actual trimming
-  		  tmp = ifelse(wtsRake$weights>wtsRake$bound, 1, 0)
-   			wtsRake$weights = pmin(wtsRake$weights, wtsRake$bound)
-     		wtsRake$trimmed = tmp
+        # saving the values of the weights before trimming
+        weights.ori = wtsRake$weights
 
-     	  for (i in 1:nbTargets) {
-     	    sumOriWts = aggregate(
-     	      wtsRake$weights.ori,
-     	      by=list(wtsRake[ , i]),
-     	      FUN=sum,
-     	      drop=FALSE
-     	    )
-     	    sumByTrim = aggregate(
-     	      wtsRake$weights,
-     	      by=list(wtsRake[ , i],wtsRake$trimmed),
-     	      FUN=sum,
-     	      drop=FALSE
-     	    )
-     	    sumByTrim[,3] = ifelse(is.na(sumByTrim[,3]),0,sumByTrim[,3])
-     	    sumNotTrim = sumByTrim[sumByTrim$Group.2==0,-2]
-     	    sumTrim    = sumByTrim[sumByTrim$Group.2==1,-2]
+        iter.trim = 0
+        while (iter.trim <= 10) {
+          # checking if trimming is needed
+          needed = any(wtsRake$weights > wtsRake$bound.above, wtsRake$weights < wtsRake$bound.below)
 
-          factorTrim = merge(sumOriWts, merge(sumTrim, sumNotTrim, by=1), by=1)
-          factorTrim[ , ncol(factorTrim)+1] = (factorTrim[ , 2] - factorTrim[ , 3]) / factorTrim[ , 4]
-          factorTrim = data.frame(factorTrim[ , 1], factorTrim[, ncol(factorTrim)])
-          colnames(factorTrim) = c(paste("cell", i, sep=""), "factors")
+          # if not needed...
+          if (!needed) {
+            if (verbose=="some") cat("Trimming for iteration	#" , iter, ":\n")
+            if (iter.trim==0) {
+              if (verbose!="none") cat("\t No weights needed to be trimmed \n")
 
-          wtsRake = plyr::join(wtsRake, factorTrim, by=paste("cell", i, sep=""))
-          wtsRake$weights = ifelse(wtsRake$trimmed==1, wtsRake$weights, wtsRake$weights * wtsRake[ , "factors"])
-          wtsRake = wtsRake[ , -ncol(wtsRake)]
-     	  }
+            } else {
+              if (verbose!="none"){
+                cat("\t After", iter.trim, "trimming cycle(s),", sum(is_trimmed), "observations had their weights trimmed \n")
+                if (verbose=="full") cat("\t")
+                cat("\t Sum of weights for those", sum(is_trimmed), "observations before trimming =",
+                    sum(weights.ori[is_trimmed]), "\n")
+                if (verbose=="full") cat("\t")
+                cat("\t Sum of weights for those", sum(is_trimmed), "observations after trimming =",
+                    sum(wtsRake$weights[is_trimmed]), "\n")
+              }
 
-      	iter.trim = iter.trim + 1
+            }
 
-      } # while (iter.trim <= 10)
+            break # if trimming not needed, stop while loop
+          }
 
-    } # if (trim)
+          # actual trimming
+          trim_above = wtsRake$weights>wtsRake$bound.above
+          trim_below = wtsRake$weights<wtsRake$bound.below
+          wtsRake$weights[trim_above] = wtsRake$bound.above[trim_above]
+          wtsRake$weights[trim_below] = wtsRake$bound.below[trim_below]
+          is_trimmed = as.numeric(trim_above | trim_below)
 
-    if (verbose=="some") cat("cv after iteration #", iter, "=", sqrt(var(wtsRake$weights))/mean(wtsRake$weights), "\n")
-    if (verbose=="some" & trim) cat("\n")
+          for (i in 1:nbTargets) {
+            rakevar = paste0(levels[[i]],collapse="*")
 
-    # checking if converged
-    diff <- NULL
-    for (i in 1:nbTargets) {
-      # summing weights in each cell
-      tmp = split(wtsRake$weights, wtsRake[ , i])
-      tmp = sapply(tmp, sum)
-      tmp = data.frame(names(tmp), tmp, row.names=NULL)
+            sumOriWts = aggregate(
+              weights.ori,
+              by=list(wtsRake[,rakevar]),
+              FUN=sum,
+              drop=FALSE
+            )
+            sumByTrim = aggregate(
+              wtsRake$weights,
+              by=list(wtsRake[,rakevar],is_trimmed),
+              FUN=sum,
+              drop=FALSE
+            )
+            sumByTrim[,3] = ifelse(is.na(sumByTrim[,3]),0,sumByTrim[,3])
+            sumNotTrim = sumByTrim[sumByTrim$Group.2==0,-2]
+            sumTrim    = sumByTrim[sumByTrim$Group.2==1,-2]
 
-      # computing the differences between sum of weights and targets
-      tmp = merge(tmp, targets[[i]], by=1)
-      diff[[i]] = tmp[ , namesTotals[[i]]] - tmp[ , 2]
-    }
-    if (max(abs(unlist(diff))) <= epsilon) {converged <- TRUE; break}
-    if (verbose=="full") cat("\n")
+            if (any(sumNotTrim[,2]==0)) stop("Trying to trim all weights. Try relaxing trimming theshold(s).")
+            factorTrim = data.frame(
+              sumOriWts[,1],
+              (sumOriWts[,2] - sumTrim[,2]) / sumNotTrim[,2]
+            )
+            colnames(factorTrim) = c(rakevar,"trim.factor")
+            wtsRake = merge(wtsRake,factorTrim,by=rakevar)
 
-    iter <- iter + 1
+            wtsRake[,"weights"] = wtsRake[,"weights"]*(is_trimmed + (1-is_trimmed)*wtsRake[,"trim.factor"])
+            wtsRake[,"trim.factor"] = NULL
+          }
 
-  } # while (iter <= maxiter)
+          iter.trim = iter.trim + 1
+
+        } # while (iter.trim <= 10)
+
+      } # if (trim)
+      ##############################################################################
+
+      if (verbose=="some") print_cv(wtsRake$weights, iter=iter)
+      if (verbose=="some" & trim) cat("\n")
+
+      # checking if converged
+      diff = 0
+      for (i in 1:nbTargets) {
+        rakevar = paste0(levels[[i]],collapse="*")
+
+        # summing weights in each cell
+        sumwgts = split(wtsRake[,"weights"], wtsRake[ , rakevar])
+        sumwgts = sapply(sumwgts, sum)
+        sumwgts = data.frame(names(sumwgts), sumwgts, row.names=NULL)
+        colnames(sumwgts) = c(rakevar,"sum.wgt")
+
+        # computing the differences between sum of weights and targets
+        tmp = merge(sumwgts, targets[[i]], by=rakevar)
+        diff = max(diff, abs(tmp[,namesTotals] - tmp[,"sum.wgt"]))
+
+      }
+      if (diff <= epsilon) {converged <- TRUE; break}
+      if (verbose=="full") cat("\n")
+
+      iter = iter + 1
+
+    } # while (iter <= maxiter)
+
 
   # checks
   if (any(wtsRake$weights <= 0)) stop("One or more weights equal to or less than 0")
