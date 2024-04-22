@@ -17,7 +17,9 @@ raking(
   trim = FALSE,
   trim.method = c("median", "mean"),
   trim.max = 6,
-  trim.group = NULL
+  trim.lim = c(0, trim.max),
+  trim.group = NULL,
+  ...
 )
 }
 \arguments{
@@ -27,7 +29,7 @@ raking(
 
 \item{targets}{a single data frame or a list of data frames containing the target/calibration totals/figures. The raking variables listed in the formula must match the column names of those data frames. The target data frames must be listed in the same order as their corresponding raking variables in the formula.}
 
-\item{namesTotals}{vector, where each element is the name of the column that contains the target/calibration totals in the corresponding data frame listed in targets.}
+\item{namesTotals}{the name of the column that contains the target/calibration totals in each data frame listed in targets.}
 
 \item{maxiter}{(default 50) maximum number of iterations to attempt for convergence.}
 
@@ -44,6 +46,8 @@ raking(
 \item{trim.method}{"median" (default) or "mean"; see trim.max}
 
 \item{trim.max}{(default 6) each weight w is trimmed if w > trim.max * trim.method(weights)}
+
+\item{trim.lim}{(default c(0,trim.max)) each weight is trimmed if w > trim.lim\link{2} \* trim.method(weights) or w < trim.lim\link{1} \* trim.method(weights)}
 
 \item{trim.group}{if NULL (default), the overall mean/median of the weights is used when trimming; if trim.group is the name of a column of data, then the weights will be trimmed based on which group of trim.group they belong to.}
 }
