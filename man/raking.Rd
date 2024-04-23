@@ -19,6 +19,8 @@ raking(
   trim.max = 6,
   trim.lim = c(0, trim.max),
   trim.group = NULL,
+  cutoff.above = NULL,
+  cutoff.below = NULL,
   ...
 )
 }
@@ -33,7 +35,7 @@ raking(
 
 \item{maxiter}{(default 50) maximum number of iterations to attempt for convergence.}
 
-\item{epsilon}{(default 1) convergence is declared if the maximum of the differences between marginal total of the raked weights and the target/calibration totals is less than or equal to epsilon. If epsilon<1 it is taken to be a fraction of the total of the sinput/start weights in the formula.}
+\item{epsilon}{(default 1) convergence is declared if the maximum of the differences between marginal total of the raked weights and the target/calibration totals is less than or equal to epsilon. If epsilon<1 it is taken to be a fraction of the total of the input/start weights in the formula.}
 
 \item{freq}{Logical. If true (default), frequency tables are displayed (this is useful to see if cells should be collapsed).}
 
@@ -50,6 +52,10 @@ raking(
 \item{trim.lim}{(default c(0,trim.max)) each weight is trimmed if w > trim.lim\link{2} \* trim.method(weights) or w < trim.lim\link{1} \* trim.method(weights)}
 
 \item{trim.group}{if NULL (default), the overall mean/median of the weights is used when trimming; if trim.group is the name of a column of data, then the weights will be trimmed based on which group of trim.group they belong to.}
+
+\item{cutoff.above}{A function that takes one argument (a vector of weights) and produces a single number representing the desired upper bound for weight trimming. If \code{cutoff.above} or \code{cutoff.below} is specified, arguments \code{trim.method}, \code{trim.max}, \code{trim.lim} are ignored.}
+
+\item{cutoff.below}{A function that takes one argument (a vector of weights) and produces a single number representing the desired lower bound for weight trimming. If \code{cutoff.above} or \code{cutoff.below} is specified, arguments \code{trim.method}, \code{trim.max}, \code{trim.lim} are ignored.}
 }
 \description{
 Performs raking of survey weights, using a technique very similar to the SAS IHB Macro
@@ -61,7 +67,8 @@ library(sampling)
 library(dplyr)
 
 # Population data
-data(MDarea.pop)
+data(MDarea.popA)
+MDarea.pop = MDarea.popA
 
 # population counts for two strata variables
 table(MDarea.pop$BLKGROUP, MDarea.pop$Gender)
@@ -157,6 +164,52 @@ sample_ex3$wgt.rake = rake_ex3$weights
 sample_ex3 \%>\%
   group_by(Gender,BLKGROUP) \%>\%
   summarise(wgttotals = sum(wgt.rake))
+
+
+
+#### example 4: two ways to trim
+# initial weights
+sample_ex4 = sample
+set.seed(20230128)
+sample_ex4$wgt.init = rchisq(nrow(sample),df=10)
+
+# method 1: specify trim.method and trim.lim
+rake_ex4a = raking_test(
+  wgt.init ~ Gender + BLKGROUP,
+  data=sample_ex4,
+  targets=list(targets_Gender, targets_BLKGRP),
+  namesTotals="popcount",
+  trim.method="median",
+  trim.lim=c(0.0025,4.5),
+  trim=TRUE,
+  trim.group="Gender"
+)
+
+# method 2: specify cutoff.above and cutoff.below
+rake_ex4b = raking_test(
+  wgt.init ~ Gender + BLKGROUP,
+  data=sample_ex4,
+  targets=list(targets_Gender, targets_BLKGRP),
+  namesTotals="popcount",
+  trim=TRUE,
+  trim.group="Gender",
+  cutoff.above = function(w) return(4.5*median(w)),
+  cutoff.below = function(w) return(0.0025*median(w))
+)
+
+# check that method 1 and 2 equivalent
+all(rake_ex4a$weights==rake_ex4b$weights)
+
+# method 2 allows more than just mean and median:
+rake_ex4c = raking_test(
+  wgt.init ~ Gender + BLKGROUP,
+  data=sample_ex4,
+  targets=list(targets_Gender, targets_BLKGRP),
+  namesTotals="popcount",
+  trim=TRUE,
+  trim.group="Gender",
+  cutoff.above = function(w) quantile(w, probs=0.75, names=FALSE) + 1.5*IQR(w)
+)
 }
 \references{
 \itemize{

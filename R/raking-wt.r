@@ -10,7 +10,7 @@
 #' @param targets a single data frame or a list of data frames containing the target/calibration totals/figures. The raking variables listed in the formula must match the column names of those data frames. The target data frames must be listed in the same order as their corresponding raking variables in the formula.
 #' @param namesTotals the name of the column that contains the target/calibration totals in each data frame listed in targets.
 #' @param maxiter (default 50) maximum number of iterations to attempt for convergence.
-#' @param epsilon (default 1) convergence is declared if the maximum of the differences between marginal total of the raked weights and the target/calibration totals is less than or equal to epsilon. If epsilon<1 it is taken to be a fraction of the total of the sinput/start weights in the formula.
+#' @param epsilon (default 1) convergence is declared if the maximum of the differences between marginal total of the raked weights and the target/calibration totals is less than or equal to epsilon. If epsilon<1 it is taken to be a fraction of the total of the input/start weights in the formula.
 #' @param freq Logical. If true (default), frequency tables are displayed (this is useful to see if cells should be collapsed).
 #' @param freqWarn a warning message will be displayed if one or more cells contained fewer than this number (default 15) of observations.
 #' @param verbose controls the amount of output displayed on the screen.
@@ -19,6 +19,8 @@
 #' @param trim.max (default 6) each weight w is trimmed if w > trim.max * trim.method(weights)
 #' @param trim.lim (default c(0,trim.max)) each weight is trimmed if w > trim.lim[2] \* trim.method(weights) or w < trim.lim[1] \* trim.method(weights)
 #' @param trim.group if NULL (default), the overall mean/median of the weights is used when trimming; if trim.group is the name of a column of data, then the weights will be trimmed based on which group of trim.group they belong to.
+#' @param cutoff.above A function that takes one argument (a vector of weights) and produces a single number representing the desired upper bound for weight trimming. If `cutoff.above` or `cutoff.below` is specified, arguments `trim.method`, `trim.max`, `trim.lim` are ignored.
+#' @param cutoff.below A function that takes one argument (a vector of weights) and produces a single number representing the desired lower bound for weight trimming. If `cutoff.above` or `cutoff.below` is specified, arguments `trim.method`, `trim.max`, `trim.lim` are ignored.
 #' @examples
 #' # Packages
 #' library(PracTools)
@@ -26,7 +28,8 @@
 #' library(dplyr)
 #'
 #' # Population data
-#' data(MDarea.pop)
+#' data(MDarea.popA)
+#' MDarea.pop = MDarea.popA
 #'
 #' # population counts for two strata variables
 #' table(MDarea.pop$BLKGROUP, MDarea.pop$Gender)
@@ -123,13 +126,60 @@
 #' sample_ex3 %>%
 #'   group_by(Gender,BLKGROUP) %>%
 #'   summarise(wgttotals = sum(wgt.rake))
+#'
+#'
+#'
+#' #### example 4: two ways to trim
+#' # initial weights
+#' sample_ex4 = sample
+#' set.seed(20230128)
+#' sample_ex4$wgt.init = rchisq(nrow(sample),df=10)
+#'
+#' # method 1: specify trim.method and trim.lim
+#' rake_ex4a = raking_test(
+#'   wgt.init ~ Gender + BLKGROUP,
+#'   data=sample_ex4,
+#'   targets=list(targets_Gender, targets_BLKGRP),
+#'   namesTotals="popcount",
+#'   trim.method="median",
+#'   trim.lim=c(0.0025,4.5),
+#'   trim=TRUE,
+#'   trim.group="Gender"
+#' )
+#'
+#' # method 2: specify cutoff.above and cutoff.below
+#' rake_ex4b = raking_test(
+#'   wgt.init ~ Gender + BLKGROUP,
+#'   data=sample_ex4,
+#'   targets=list(targets_Gender, targets_BLKGRP),
+#'   namesTotals="popcount",
+#'   trim=TRUE,
+#'   trim.group="Gender",
+#'   cutoff.above = function(w) return(4.5*median(w)),
+#'   cutoff.below = function(w) return(0.0025*median(w))
+#' )
+#'
+#' # check that method 1 and 2 equivalent
+#' all(rake_ex4a$weights==rake_ex4b$weights)
+#'
+#' # method 2 allows more than just mean and median:
+#' rake_ex4c = raking_test(
+#'   wgt.init ~ Gender + BLKGROUP,
+#'   data=sample_ex4,
+#'   targets=list(targets_Gender, targets_BLKGRP),
+#'   namesTotals="popcount",
+#'   trim=TRUE,
+#'   trim.group="Gender",
+#'   cutoff.above = function(w) quantile(w, probs=0.75, names=FALSE) + 1.5*IQR(w)
+#' )
 #' @references
 #' * Izrael, Hoaglin & Battaglia (2000), ["A SAS Macro for Balancing a Weighted Sample"](http://www2.sas.com/proceedings/sugi25/25/st/25p258.pdf), Proceedings of the 25th Annual SAS Users Group International Conference, Paper 258
 #' * Izrael, Battaglia & Frankel (2009), ["Extreme Survey Weight Adjustment as a Component of Sample Balancing (a.k.a. Raking)"](https://support.sas.com/resources/papers/proceedings09/247-2009.pdf), SAS Global Forum, Paper 247-2009
 #' @export
 raking = function(
     formula, data, targets, namesTotals, maxiter=50, epsilon=1, freq=TRUE, freqWarn=15, verbose=c("some", "none", "full"),
-		trim=FALSE, trim.method=c("median", "mean"), trim.max=6, trim.lim=c(0,trim.max), trim.group=NULL, ...)
+		trim=FALSE, trim.method=c("median", "mean"), trim.max=6, trim.lim=c(0,trim.max), trim.group=NULL,
+		cutoff.above=NULL,cutoff.below=NULL,...)
 {
 
   # helper functions ###########################################################
@@ -188,15 +238,24 @@ raking = function(
     if (!is.logical(trim))
       stop("'trim' must be TRUE or FALSE")
 
-    if (!is.numeric(trim.lim) || length(trim.lim)!=2 || trim.lim[1]<0 || trim.lim[2]<=0 || trim.lim[1] >= trim.lim[2])
-      stop("'trim.lim' must be a pair of positive numbers such that 0 <= trim.lim[1] < trim.lim[2]")
+    if (trim) {
+      if (is.null(cutoff.above) & is.null(cutoff.below)) {
+        if (!is.numeric(trim.lim) || length(trim.lim)!=2 || trim.lim[1]<0 || trim.lim[2]<=0 || trim.lim[1] >= trim.lim[2])
+          stop("'trim.lim' must be a pair of positive numbers such that 0 <= trim.lim[1] < trim.lim[2]")
 
-    trim.method = trim.method[1]
-    cutoff.above = function(wgts) get(trim.method)(wgts) * trim.lim[2]
-    cutoff.below = function(wgts) get(trim.method)(wgts) * trim.lim[1]
+        trim.method = trim.method[1]
+        if (trim.method %notin% c("median", "mean"))
+          stop("'trim.method' must be 'median' or 'mean'. To define own trim method, specify 'cutoff.above' and/or 'cutoff.below'.")
 
-    if (trim && !is.null(trim.group) && is.na(match(trim.group, names(data))))
-      stop("'", trim.group, "' is not valid column of 'data'")
+        cutoff.above = function(wgts) get(trim.method)(wgts) * trim.lim[2]
+        cutoff.below = function(wgts) get(trim.method)(wgts) * trim.lim[1]
+      }
+      if (is.null(cutoff.above)) cutoff.above = function(wgts) return(Inf)
+      if (is.null(cutoff.below)) cutoff.below = function(wgts) return(0)
+
+      if (!is.null(trim.group) && is.na(match(trim.group, names(data))))
+        stop("'", trim.group, "' is not valid column of 'data'")
+    }
 
     nameWts = deparse(formula[[2]])
     if (nameWts %notin% names(data))
@@ -226,7 +285,8 @@ raking = function(
 
   ##############################################################################
 
-    # CONSTRUCT TARGET AND WEIGHTS DATA FRAMES
+
+  # CONSTRUCT TARGET AND WEIGHTS DATA FRAMES
     wtsRake = data.frame(matrix("",nrow=nrow(data),ncol=nbTargets))
     for (i in 1:nbTargets) {
       rakevar = paste0(levels[[i]],collapse="*")
